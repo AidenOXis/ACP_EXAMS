@@ -1,0 +1,150 @@
+================================
+
+stomp_config.py
+
+================================
+
+STOMP_HOST = 'localhost' STOMP_PORT = 61613 TOPICS = { 'temp': '/topic/temp', 'press': '/topic/press', 'humid': '/topic/humid' }
+
+================================
+
+utils.py
+
+================================
+
+def calcola_statistiche(valori): return { 'media': sum(valori) / len(valori), 'min': min(valori), 'max': max(valori) }
+
+================================
+
+icollector.py
+
+================================
+
+from abc import ABC, abstractmethod
+
+class ICollector(ABC): @abstractmethod def measure(self, tipo: str, valore: float): pass
+
+================================
+
+proxy.py (Proxy per Sensor)
+
+================================
+
+import socket import json from icollector import ICollector
+
+class CollectorProxy(ICollector): def init(self, host='localhost', port=9000): self.addr = (host, port)
+
+def measure(self, tipo, valore):
+    msg = json.dumps({'tipo': tipo, 'valore': valore})
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.sendto(msg.encode(), self.addr)
+    sock.close()
+
+================================
+
+collector_impl.py
+
+================================
+
+from icollector import ICollector
+
+class CollectorImpl(ICollector): def init(self, queue): self.queue = queue
+
+def measure(self, tipo, valore):
+    msg = f"{tipo}-{valore}"
+    self.queue.put(msg)
+
+================================
+
+skeleton.py (Skeleton per Server)
+
+================================
+
+import socket import json
+
+class CollectorSkeleton: def init(self, delegate, port=9000): self.port = port self.delegate = delegate
+
+def handle_request(self, data):
+    payload = json.loads(data.decode())
+    tipo = payload['tipo']
+    valore = payload['valore']
+    self.delegate.measure(tipo, valore)
+
+def serve_forever(self, callback):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(('0.0.0.0', self.port))
+    print("Collector Server in ascolto su UDP...")
+
+    while True:
+        data, _ = sock.recvfrom(1024)
+        self.handle_request(data)
+        if self.delegate.queue.full():
+            callback(self._consume_all())
+
+def _consume_all(self):
+    results = []
+    while not self.delegate.queue.empty():
+        results.append(self.delegate.queue.get())
+    return results
+
+================================
+
+collector_server.py
+
+================================
+
+import stomp from queue import Queue from skeleton import CollectorSkeleton from collector_impl import CollectorImpl from stomp_config import STOMP_HOST, STOMP_PORT, TOPICS
+
+class CollectorSender: def init(self): self.conn = stomp.Connection([(STOMP_HOST, STOMP_PORT)]) self.conn.connect(wait=True)
+
+def send_measurements(self, messaggi):
+    for msg in messaggi:
+        tipo, valore = msg.split('-')
+        topic = TOPICS[tipo]
+        if tipo == 'temp':
+            self.conn.begin("tx-1")
+            try:
+                self.conn.send(topic, msg, transaction="tx-1")
+                self.conn.commit("tx-1")
+            except:
+                self.conn.abort("tx-1")
+        else:
+            self.conn.send(topic, msg)
+
+if name == 'main': queue = Queue(maxsize=6) impl = CollectorImpl(queue) skeleton = CollectorSkeleton(impl) sender = CollectorSender() skeleton.serve_forever(sender.send_measurements)
+
+================================
+
+sensor.py
+
+================================
+
+import threading import random import time from proxy import CollectorProxy
+
+TIPI = ['temp', 'press', 'humid']
+
+def sensor_thread(sensor_id): proxy = CollectorProxy() tipo = random.choice(TIPI) for _ in range(5): valore = round(random.uniform(10.0, 30.0), 2) print(f"[Sensor {sensor_id}] Send {tipo}: {valore}") proxy.measure(tipo, valore) time.sleep(1)
+
+if name == 'main': for i in range(5): threading.Thread(target=sensor_thread, args=(i,)).start()
+
+================================
+
+measure_checker.py
+
+================================
+
+import stomp import threading from stomp_config import STOMP_HOST, STOMP_PORT, TOPICS from utils import calcola_statistiche
+
+class MeasureListener(stomp.ConnectionListener): def init(self, tipo): self.tipo = tipo self.valori = []
+
+def on_message(self, frame):
+    print(f"[Checker {self.tipo}] Ricevuto: {frame.body}")
+    _, val = frame.body.split('-')
+    self.valori.append(float(val))
+    stats = calcola_statistiche(self.valori)
+    print(f"[{self.tipo.upper()}] Media: {stats['media']:.2f}, Min: {stats['min']}, Max: {stats['max']}")
+
+def start_checker(tipo): conn = stomp.Connection([(STOMP_HOST, STOMP_PORT)]) listener = MeasureListener(tipo) conn.set_listener('', listener) conn.connect(wait=True) conn.subscribe(destination=TOPICS[tipo], id=f'{tipo}-sub', ack='auto')
+
+if name == 'main': for tipo in ['temp', 'press', 'humid']: threading.Thread(target=start_checker, args=(tipo,)).start()
+
